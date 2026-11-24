@@ -59,4 +59,22 @@ chmod 0700 "$DATA"
 
 cd "$DATA"
 export HOME="$DATA"
-exec setpriv --reuid=webcodex --regid=webcodex --init-groups -- /usr/local/bin/webcodex-server
+# Run the server as a child so this script (PID 1) can turn any unexpected
+# stop into a non-zero exit, which Railway's ON_FAILURE policy restarts.
+# A PID 1 process ignores signals it has no handler for, so keeping the
+# server off PID 1 also lets `kill` test crash restarts.
+setpriv --reuid=webcodex --regid=webcodex --init-groups -- /usr/local/bin/webcodex-server &
+child=$!
+stopping=0
+trap 'stopping=1; kill -TERM "$child" 2>/dev/null' TERM INT
+rc=0
+while :; do
+  wait "$child" && rc=0 || rc=$?
+  kill -0 "$child" 2>/dev/null || break
+done
+if [ "$stopping" = 0 ] && [ "$rc" = 0 ]; then
+  echo "webcodex-railway: webcodex-server exited unexpectedly; exiting 1 so Railway restarts it." >&2
+  rc=1
+fi
+echo "webcodex-railway: webcodex-server stopped (exit $rc)." >&2
+exit "$rc"
